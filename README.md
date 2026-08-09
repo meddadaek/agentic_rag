@@ -19,20 +19,27 @@ An advanced, intelligent Retrieval-Augmented Generation (RAG) framework designed
 
 ## 📸 Architecture & Screenshots
 
+Below are the repository diagrams that explain the design and flow. They are included in the repository root — click to enlarge on GitHub.
 
-*Figure 1: High-level Agentic RAG workflow and reasoning pipeline.*
+### System architecture
 
+![System architecture](01_system_architecture.png)
 
-*Figure 2: Information retrieval and re-ranking mechanism.*
+### Langgraph / state machine
 
+![Langgraph state machine](02_langgraph_state_machine.png)
 
-*Figure 3: Interactive query dashboard and agent execution feedback.*
+### Grading & decision logic
 
+![Grading decision logic](03_grading_decision_logic.png)
 
-*Figure 4: Context retrieval accuracy and latency performance.*
+### Traditional vs Agentic comparison
 
+![Traditional vs Agentic](04_traditional_vs_agentic.png)
 
-*Figure 5: Integration pipeline with external tools and vector stores.*
+### Embedding & retrieval pipeline
+
+![Embedding retrieval pipeline](05_embedding_retrieval_pipeline.png)
 
 ---
 
@@ -103,3 +110,4 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 ### 💡 Note on Image Paths:
 
+The five diagram files are included in the repository root. If you rename or move them, update the image paths above so they render correctly on GitHub.
