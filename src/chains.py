@@ -16,6 +16,11 @@ class GradeDocuments(BaseModel):
     )
 
 
+class AnswerValidation(BaseModel):
+    """Whether the response is grounded in the supplied evidence."""
+    supported: str = Field(description="'yes' when the answer is supported by context, otherwise 'no'")
+
+
 llm = ChatGroq(model=LLM_MODEL, temperature=TEMPERATURE)
 structured_llm_grader = llm.with_structured_output(GradeDocuments)
 
@@ -34,6 +39,12 @@ User question:
 ])
 
 doc_grader = grade_prompt | structured_llm_grader
+
+answer_validator_prompt = ChatPromptTemplate.from_messages([
+    ("system", "Judge whether the answer is supported by the evidence. Return yes only when it answers the question without unsupported claims."),
+    ("human", "Question: {question}\n\nEvidence: {context}\n\nAnswer: {answer}"),
+])
+answer_validator = answer_validator_prompt | llm.with_structured_output(AnswerValidation)
 
 
 def format_docs(docs):
@@ -73,6 +84,17 @@ qa_rag_chain = (
     | chat_llm
     | StrOutputParser()
 )
+
+direct_chat_prompt = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        "You are Nexus, a helpful AI research assistant. Answer clearly and "
+        "honestly. When the user has not selected a knowledge base, answer "
+        "normally from your general knowledge.",
+    ),
+    ("human", "{question}"),
+])
+direct_chat_chain = direct_chat_prompt | chat_llm | StrOutputParser()
 
 
 SYS_PROMPT_REWRITING = """

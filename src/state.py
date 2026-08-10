@@ -24,3 +24,8 @@ class GraphState(TypedDict):
     generation: str
     web_search_needed: str
     documents: List[Document]
+    original_question: str
+    activities: List[str]
+    web_sources: List[dict]
+    answer_attempts: int
+    answer_supported: bool

@@ -5,9 +5,9 @@ You don't need the original Wikipedia file! Pick any option below.
 import os
 import json
 import gzip
+from io import BytesIO
 from typing import List
 from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.config import CHUNK_SIZE, CHUNK_OVERLAP
 
 
@@ -54,9 +54,9 @@ def load_from_wikipedia_api(
                 page_content=content,
                 metadata={"title": page.title, "article_id": topic}
             ))
-            print(f"   ✅ Fetched: {page.title}")
+            print(f"   Fetched: {page.title}")
         except Exception as e:
-            print(f"   ⚠️  Skipped '{topic}': {e}")
+            print(f"   Skipped '{topic}': {e}")
             continue
 
     print(f"   Total fetched: {len(docs)} articles")
@@ -90,7 +90,7 @@ def load_from_text_folder(folder_path: str) -> List[Document]:
                 page_content=content,
                 metadata={"title": filename.replace(".txt", ""), "article_id": filename}
             ))
-            print(f"   ✅ Loaded: {filename}")
+            print(f"   Loaded: {filename}")
 
     print(f"   Total loaded: {len(docs)} files")
     return docs
@@ -132,7 +132,88 @@ def load_from_csv(
             }
         ))
 
-    print(f"   ✅ Loaded {len(docs)} rows from {csv_path}")
+    print(f"   Loaded {len(docs)} rows from {csv_path}")
+    return docs
+
+
+def _extract_text_from_pdf(file_bytes: bytes) -> str:
+    try:
+        import PyPDF2
+    except ImportError as exc:
+        raise ImportError("Install PyPDF2 for PDF uploads: pip install PyPDF2") from exc
+
+    from io import BytesIO
+    reader = PyPDF2.PdfReader(BytesIO(file_bytes))
+    text = []
+    for page in reader.pages:
+        page_text = page.extract_text() or ""
+        text.append(page_text)
+    return "\n\n".join(text).strip()
+
+
+def load_from_uploaded_files(uploaded_files) -> List[Document]:
+    """Load documents from uploaded Streamlit files."""
+    if not uploaded_files:
+        return []
+
+    docs: List[Document] = []
+    for uploaded_file in uploaded_files:
+        name = uploaded_file.name
+        extension = name.lower().split(".")[-1]
+        file_bytes = uploaded_file.getvalue()
+
+        if not file_bytes:
+            print(f"   Skipped empty upload: {name}")
+            continue
+
+        try:
+            if extension == "txt":
+                docs.append(Document(
+                    page_content=file_bytes.decode("utf-8", errors="ignore"),
+                    metadata={"title": name.removesuffix(".txt"), "article_id": name},
+                ))
+            elif extension == "pdf":
+                text = _extract_text_from_pdf(file_bytes)
+                if not text:
+                    print(f"   Skipped PDF with no extractable text: {name}")
+                    continue
+                docs.append(Document(
+                    page_content=text,
+                    metadata={"title": name.removesuffix(".pdf"), "article_id": name},
+                ))
+            elif extension == "csv":
+                import pandas as pd
+                df = pd.read_csv(BytesIO(file_bytes))
+                columns = list(df.columns)
+                if not columns:
+                    print(f"   Skipped CSV with no columns: {name}")
+                    continue
+                text_column = next((column for column in columns if column.lower() in ("text", "content", "body", "description")), columns[0])
+                title_column = next((column for column in columns if column.lower() in ("title", "name", "headline")), None)
+                for idx, row in df.iterrows():
+                    docs.append(Document(
+                        page_content=str(row[text_column]),
+                        metadata={"title": str(row[title_column]) if title_column else f"{name}:{idx}", "article_id": f"{name}-{idx}"},
+                    ))
+            elif extension in ("jsonl", "json"):
+                text = file_bytes.decode("utf-8", errors="ignore")
+                records = [json.loads(line) for line in text.splitlines() if line.strip()] if extension == "jsonl" else json.loads(text)
+                if not isinstance(records, list):
+                    records = [records]
+                for idx, record in enumerate(records):
+                    data = record if isinstance(record, dict) else {"text": str(record)}
+                    docs.append(Document(
+                        page_content=str(data.get("text", data.get("content", json.dumps(data)))),
+                        metadata={"title": str(data.get("title", data.get("name", name))), "article_id": data.get("id", f"{name}-{idx}")},
+                    ))
+            else:
+                print(f"   Skipped unsupported upload: {name}")
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            print(f"   Skipped unreadable upload '{name}': {exc}")
+
+    docs = [doc for doc in docs if doc.page_content and doc.page_content.strip()]
+
+    print(f"   Loaded {len(docs)} uploaded documents")
     return docs
 
 
@@ -168,7 +249,7 @@ def load_from_jsonl(filepath: str, text_key: str = "text", title_key: str = "tit
                 }
             ))
 
-    print(f"   ✅ Loaded {len(docs)} documents from {filepath}")
+    print(f"   Loaded {len(docs)} documents from {filepath}")
     return docs
 
 
@@ -293,8 +374,8 @@ Vegetarianism is widely practiced in India due to religious and cultural beliefs
         for i, article in enumerate(articles)
     ]
 
-    print(f"   ✅ Generated {len(docs)} synthetic articles")
-    print("   💡 These are realistic Wikipedia-style docs for testing")
+    print(f"   Generated {len(docs)} synthetic articles")
+    print("   These are realistic Wikipedia-style docs for testing")
     return docs
 
 
@@ -302,9 +383,30 @@ Vegetarianism is widely practiced in India due to religious and cultural beliefs
 # UNIVERSAL: Chunk any loaded documents
 # ===========================================================================
 def chunk_documents(docs: List[Document]) -> List[Document]:
-    """Split documents into smaller chunks for better retrieval."""
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP
-    )
-    return splitter.split_documents(docs)
+    """Split documents into overlapping, word-boundary-aware chunks.
+
+    This local implementation avoids importing the heavyweight optional text
+    splitter package during Streamlit startup while preserving the existing
+    chunk-size and overlap configuration.
+    """
+    chunks: List[Document] = []
+    for document in docs:
+        text = document.page_content.strip()
+        start = 0
+        chunk_number = 0
+        while start < len(text):
+            end = min(start + CHUNK_SIZE, len(text))
+            if end < len(text):
+                boundary = text.rfind(" ", start, end)
+                if boundary > start:
+                    end = boundary
+            content = text[start:end].strip()
+            if content:
+                metadata = dict(document.metadata)
+                metadata["chunk"] = chunk_number
+                chunks.append(Document(page_content=content, metadata=metadata))
+                chunk_number += 1
+            if end >= len(text):
+                break
+            start = max(end - CHUNK_OVERLAP, start + 1)
+    return chunks

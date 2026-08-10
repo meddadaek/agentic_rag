@@ -22,6 +22,39 @@ def load_api_keys():
     return groq_key, tavily_key
 
 
+def validate_api_keys() -> None:
+    """Ensure required API keys are present in environment variables."""
+    missing = [
+        name for name in ("GROQ_API_KEY", "TAVILY_API_KEY")
+        if not os.getenv(name)
+    ]
+    if missing:
+        raise EnvironmentError(
+            "Missing required environment variable(s): " + ", ".join(missing)
+        )
+
+
+def validate_groq_api_key() -> None:
+    """Ensure answer-generation credentials are available."""
+    if not os.getenv("GROQ_API_KEY"):
+        raise EnvironmentError(
+            "Missing GROQ_API_KEY. Add it to .env locally or Streamlit secrets when deployed."
+        )
+
+
+def tavily_is_configured() -> bool:
+    """Return whether the optional web-research credential is available."""
+    return bool(os.getenv("TAVILY_API_KEY"))
+
+
+def api_keys_status() -> dict:
+    """Return the presence status of required API keys."""
+    return {
+        "GROQ_API_KEY": bool(os.getenv("GROQ_API_KEY")),
+        "TAVILY_API_KEY": bool(os.getenv("TAVILY_API_KEY")),
+    }
+
+
 # Groq does not provide embeddings — use a local HuggingFace model instead
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LLM_MODEL = "llama-3.1-8b-instant"

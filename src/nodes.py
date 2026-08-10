@@ -8,7 +8,8 @@ from typing import List
 from langchain_core.documents import Document
 
 from src.state import GraphState
-from src.chains import question_rewriter ,qa_rag_chain, doc_grader
+from src.chains import answer_validator, question_rewriter, qa_rag_chain, doc_grader
+from src.config import tavily_is_configured
 from src.tools import get_web_search_tool
 
 
@@ -26,11 +27,11 @@ def retrieve(state: GraphState, retriever) -> GraphState:
     Returns:
         Updated graph state with retrieved documents.
     """
-    print("\n🔍 --- RETRIEVAL FROM VECTOR DB ---")
+    print("\n--- RETRIEVAL FROM VECTOR DB ---")
     question = state["question"]
     documents = retriever.invoke(question)
     print(f"   Retrieved {len(documents)} documents")
-    return {"documents": documents, "question": question}
+    return {"documents": documents, "question": question, "original_question": state.get("original_question", question), "activities": ["Searched the selected knowledge base."]}
 
 def grade_documents(state: GraphState) -> dict:
     """
@@ -48,7 +49,7 @@ def grade_documents(state: GraphState) -> dict:
     Returns:
         Updated state with filtered documents and web_search_needed flag.
     """
-    print("\n📊 --- CHECK DOCUMENT RELEVANCE TO QUESTION ---")
+    print("\n--- CHECK DOCUMENT RELEVANCE TO QUESTION ---")
     question = state["question"]
     documents = state["documents"]
 
@@ -64,22 +65,24 @@ def grade_documents(state: GraphState) -> dict:
             grade = score.binary_score
 
             if grade == "yes":
-                print(f"   ✅ Doc {i}: RELEVANT")
+                print(f"   Doc {i}: RELEVANT")
                 filtered_docs.append(doc)
             else:
-                print(f"   ❌ Doc {i}: NOT RELEVANT")
-                web_search_needed = "Yes"
+                print(f"   Doc {i}: NOT RELEVANT")
     else:
-        print("   ⚠️  NO DOCUMENTS RETRIEVED")
+        print("   NO DOCUMENTS RETRIEVED")
         web_search_needed = "Yes"
 
+    if not filtered_docs:
+        web_search_needed = "Yes"
     print(f"\n   Filtered: {len(filtered_docs)}/{len(documents)} relevant")
     print(f"   Web search needed: {web_search_needed}")
 
     return {
         "documents": filtered_docs,
         "question": question,
-        "web_search_needed": web_search_needed
+        "web_search_needed": web_search_needed,
+        "activities": state.get("activities", []) + ["Checked retrieved context for relevance."],
     }
 
 
@@ -94,11 +97,11 @@ def rewrite_query(state: GraphState) -> GraphState:
     Returns:
         Updated graph state with the rewritten question.
     """
-    print("\n🔄 --- REWRITING QUERY FOR WEB SEARCH ---")
+    print("\n--- REWRITING QUERY FOR WEB SEARCH ---")
     question = state["question"]
     rewritten_question = question_rewriter.invoke({"question": question})
     print(f"   Rewritten Question: {rewritten_question}")
-    return {"question": rewritten_question}
+    return {"question": rewritten_question, "activities": state.get("activities", []) + ["Rewrote the question for web research."]}
 def web_search(state: GraphState) -> GraphState:
     """
     Performs a web search using the rewritten question.
@@ -110,21 +113,23 @@ def web_search(state: GraphState) -> GraphState:
     returns:
         Updated graph state with web search results.
     """
-    print("\n🌐 --- WEB SEARCH ---")
+    print("\n--- WEB SEARCH ---")
     question = state["question"]
     documents = state["documents"]
 
+    if not tavily_is_configured():
+        raise EnvironmentError("Tavily research is needed, but TAVILY_API_KEY is not configured.")
     tv_search = get_web_search_tool()
     docs = tv_search.invoke(question)
 
-    web_results = "\n\n".join([d["content"] for d in docs])
-    web_results_doc = Document(page_content=web_results)
+    web_results = "\n\n".join(d.get("content", "") for d in docs)
+    web_results_doc = Document(page_content=web_results, metadata={"title": "Web research", "source": "Tavily"})
     documents.append(web_results_doc)
 
     print(f"   Found {len(docs)} web results")
     print(f"   Total context docs: {len(documents)}")
 
-    return {"documents": documents, "question": question}
+    return {"documents": documents, "question": question, "web_sources": docs, "activities": state.get("activities", []) + ["Researched the web for additional evidence."]}
 
 def generate_answer(state: GraphState) -> GraphState:
     """
@@ -137,7 +142,7 @@ def generate_answer(state: GraphState) -> GraphState:
     Returns:
         Updated graph state with the generated answer.
     """
-    print("\n📝 --- GENERATING ANSWER ---")
+    print("\n--- GENERATING ANSWER ---")
     question = state["question"]
     documents = state["documents"]
 
@@ -145,7 +150,21 @@ def generate_answer(state: GraphState) -> GraphState:
     answer = qa_rag_chain.invoke({"question": question, "context": context})
 
     print(f"   Generated Answer: {answer}")
-    return {"generation": answer, "question": question}
+    return {"generation": answer, "question": question, "answer_attempts": state.get("answer_attempts", 0) + 1, "activities": state.get("activities", []) + ["Generated a grounded response."]}
+
+
+def validate_answer(state: GraphState) -> GraphState:
+    """Run a bounded, user-safe grounding check on the generated response."""
+    context = "\n\n".join(doc.page_content for doc in state["documents"])
+    result = answer_validator.invoke({"question": state.get("original_question", state["question"]), "context": context, "answer": state["generation"]})
+    supported = result.supported.strip().lower() == "yes"
+    return {"answer_supported": supported, "activities": state.get("activities", []) + ["Validated the response against available evidence."]}
+
+
+def decide_after_validation(state: GraphState) -> str:
+    if state.get("answer_supported") or state.get("answer_attempts", 0) >= 2:
+        return "end"
+    return "generate_answer"
 def decide_to_generate(state: GraphState) -> str:
     """
     Conditional routing function for the LangGraph.
@@ -160,12 +179,12 @@ def decide_to_generate(state: GraphState) -> str:
     Returns:
         String name of the next node to execute.
     """
-    print("\n🔀 --- ASSESS GRADED DOCUMENTS ---")
+    print("\n--- ASSESS GRADED DOCUMENTS ---")
     web_search_needed = state["web_search_needed"]
 
     if web_search_needed == "Yes":
-        print("   DECISION: Documents insufficient → REWRITE QUERY → WEB SEARCH")
+        print("   DECISION: Documents insufficient; rewrite query and search web")
         return "rewrite_query"
     else:
-        print("   DECISION: All docs relevant → GENERATE RESPONSE")
+        print("   DECISION: Relevant documents found; generate response")
         return "generate_answer"

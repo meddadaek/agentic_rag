@@ -1,6 +1,7 @@
 """Vector database setup: embedding, indexing, and retrieval."""
 import gzip
 import json
+import os
 from typing import List
 
 from langchain_chroma import Chroma
@@ -16,7 +17,11 @@ from src.config import (
 )
 
 
-def build_vector_store(chunked_docs: list) -> Chroma:
+def build_vector_store(
+    chunked_docs: list,
+    collection_name: str = COLLECTION_NAME,
+    persist_directory: str | None = PERSIST_DIRECTORY,
+) -> Chroma:
     """
     Build a Chroma vector database from chunked documents.
     Uses cosine similarity as the distance metric.
@@ -27,15 +32,18 @@ def build_vector_store(chunked_docs: list) -> Chroma:
     Returns:
         Chroma vector database instance.
     """
+    if not chunked_docs:
+        raise ValueError("Cannot build a vector store without document chunks.")
+    if persist_directory:
+        os.makedirs(persist_directory, exist_ok=True)
     embed_model = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
-    chroma_db = Chroma.from_documents(
+    return Chroma.from_documents(
         documents=chunked_docs,
-        collection_name=COLLECTION_NAME,
+        collection_name=collection_name,
         embedding=embed_model,
         collection_metadata={"hnsw:space": "cosine"},
-        persist_directory=PERSIST_DIRECTORY,
+        persist_directory=persist_directory,
     )
-    return chroma_db
 
 
 def get_retriever(chroma_db: Chroma):

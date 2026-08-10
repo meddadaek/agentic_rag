@@ -7,7 +7,7 @@ web_search_needed flag.
 from langgraph.graph import END, StateGraph
 
 from src.state import GraphState
-from src.nodes import retrieve, grade_documents, rewrite_query, web_search, generate_answer, decide_to_generate
+from src.nodes import decide_after_validation, generate_answer, grade_documents, retrieve, rewrite_query, validate_answer, web_search, decide_to_generate
 
 
 def build_agentic_rag_graph(retriever):
@@ -46,6 +46,7 @@ def build_agentic_rag_graph(retriever):
     workflow.add_node("rewrite_query", rewrite_query)
     workflow.add_node("web_search", web_search)
     workflow.add_node("generate_answer", generate_answer)
+    workflow.add_node("validate_answer", validate_answer)
 
     # -----------------------------------------------------------------------
     # Step 2: Define edges (transitions between nodes)
@@ -70,8 +71,8 @@ def build_agentic_rag_graph(retriever):
     workflow.add_edge("rewrite_query", "web_search")
     workflow.add_edge("web_search", "generate_answer")
 
-    # After generating answer, end the workflow
-    workflow.add_edge("generate_answer", END)
+    workflow.add_edge("generate_answer", "validate_answer")
+    workflow.add_conditional_edges("validate_answer", decide_after_validation, {"generate_answer": "generate_answer", "end": END})
 
     # -----------------------------------------------------------------------
     # Step 3: Compile the graph
